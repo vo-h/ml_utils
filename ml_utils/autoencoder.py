@@ -24,3 +24,19 @@ class Autoencoder(keras.Model):
         encoded = self.encoder(x)
         decoded = self.decoder(encoded)
         return decoded
+
+
+def get_dim_ranges(input_dim: int, latent_ditm: int, num_layers: int):
+
+    dim_ranges = []
+    increment = int((input_dim - latent_ditm) / num_layers)
+
+    minimum = latent_ditm + 1
+    for layer in range(num_layers):
+        maximum = minimum + increment
+        if maximum > input_dim - 1:
+            maximum = input_dim - 1
+        dim_ranges.append([minimum, maximum])
+        minimum += increment + 1
+
+    return dim_ranges
