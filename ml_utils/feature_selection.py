@@ -1,10 +1,11 @@
-from keras import layers
+from tensorflow.keras import layers
 import tensorflow as tf
 
 
 class GatedLinearUnit(layers.Layer):
     def __init__(self, units):
         super(GatedLinearUnit, self).__init__()
+
         self.linear = layers.Dense(units)
         self.sigmoid = layers.Dense(units, activation="sigmoid")
 
@@ -15,6 +16,7 @@ class GatedLinearUnit(layers.Layer):
 class GatedResidualNetwork(layers.Layer):
     def __init__(self, units, dropout_rate):
         super(GatedResidualNetwork, self).__init__()
+
         self.units = units
         self.elu_dense = layers.Dense(units, activation="elu")
         self.linear_dense = layers.Dense(units)
@@ -38,10 +40,12 @@ class VariableSelection(layers.Layer):
     def __init__(self, num_features, units, dropout_rate):
         super(VariableSelection, self).__init__()
         self.grns = list()
+
         # Create a GRN for each feature independently
         for idx in range(num_features):
             grn = GatedResidualNetwork(units, dropout_rate)
             self.grns.append(grn)
+
         # Create a GRN for the concatenation of all the features
         self.grn_concat = GatedResidualNetwork(units, dropout_rate)
         self.softmax = layers.Dense(units=num_features, activation="softmax")

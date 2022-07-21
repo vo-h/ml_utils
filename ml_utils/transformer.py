@@ -1,7 +1,5 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers
-import keras
 
 
 def get_angles(pos, i, d_model):
@@ -35,8 +33,13 @@ def compute_mask_for_multihead_attention(query, value, mask_value=-10000):
     return mask
 
 
+def compute_look_ahead_mask(size):
+    mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
+    return tf.cast(tf.equal(mask, 0), tf.int32)
+
+
 class EncoderLayer(tf.keras.layers.Layer):
-    def __init__(self, key_dim, dense_dim, num_heads, rate=0.01, add_value=True, add_query=True, add_key=False, **kwargs):
+    def __init__(self, key_dim, dense_dim, num_heads, output_shape=None, rate=0.01, add_value=True, add_query=True, add_key=False, **kwargs):
 
         super(EncoderLayer, self).__init__()
 
@@ -44,12 +47,15 @@ class EncoderLayer(tf.keras.layers.Layer):
         self.add_query = add_query
         self.add_key = add_key
 
-        self.attention = layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim, **kwargs)
-        self.dense_proj = keras.Sequential([layers.Dense(dense_dim, activation="relu"), layers.Dense(key_dim)])
-        self.layernorm_1 = layers.LayerNormalization()
-        self.layernorm_2 = layers.LayerNormalization()
-        self.dropout1 = layers.Dropout(rate)
-        self.dropout2 = layers.Dropout(rate)
+        if output_shape == None:
+            output_shape = key_dim
+
+        self.attention = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim, output_shape=output_shape, **kwargs)
+        self.dense_proj = tf.keras.Sequential([tf.keras.layers.Dense(dense_dim, activation="relu"), tf.keras.layers.Dense(output_shape)])
+        self.layernorm_1 = tf.keras.layers.LayerNormalization()
+        self.layernorm_2 = tf.keras.layers.LayerNormalization()
+        self.dropout1 = tf.keras.layers.Dropout(rate)
+        self.dropout2 = tf.keras.layers.Dropout(rate)
         self.supports_masking = True
 
     def call(self, query, value, key, training, mask, **kwargs):
@@ -111,6 +117,9 @@ class Encoder(tf.keras.layers.Layer):
             add_value (bool, optional): whether to include value in the residual network in EncoderLayer. Defaults to True.
             add_query (bool, optional): wheter to include query in the residual network in EncoderLayer. Defaults to True.
             add_key (bool, optional): whether to include key in the residual network in EncoderLayer. Defaults to False.
+            value_vocab_size (int, optional): vocabulary size of `value` tensor for embedding.
+            query_vocab_size (int, optional): vocabulary size of `query` tensor for embedding.
+            key_vocab_size (int, optional): vocabulary size of `key` tensor for embedding.
             mask_value (int, optional): mask value for padding masks. Defaults to -10000.
         """
         super(Encoder, self).__init__()
@@ -141,11 +150,11 @@ class Encoder(tf.keras.layers.Layer):
         ]
 
         if value_vocab_size != None:
-            self.query_embedding = layers.Embedding(value_vocab_size, embed_dim)
+            self.query_embedding = tf.keras.layers.Embedding(value_vocab_size, embed_dim)
         if query_vocab_size != None:
-            self.vocab_embedding = layers.Embedding(query_vocab_size, embed_dim)
+            self.vocab_embedding = tf.keras.layers.Embedding(query_vocab_size, embed_dim)
         if key_vocab_size != None:
-            self.key_embedding = layers.Embedding(key_vocab_size, embed_dim)
+            self.key_embedding = tf.keras.layers.Embedding(key_vocab_size, embed_dim)
 
     def call(self, query, value, key, training, mask=None, **kwargs):
 
@@ -178,5 +187,35 @@ class Encoder(tf.keras.layers.Layer):
 
 
 class DecoderLayer(tf.keras.layers.Layer):
-    def __init__(self, trainable=True, name=None, dtype=None, dynamic=False, **kwargs):
-        super().__init__(trainable, name, dtype, dynamic, **kwargs)
+    def __init__(self, d_model, num_heads, dense_dim, key_dim, rate=0.1, **kwargs):
+        super(DecoderLayer, self).__init__()
+
+        self.mha1 = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim, **kwargs)
+        self.mha2 = tf.keraas.layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim, **kwargs)
+
+        self.ffn = tf.keras.Sequential([tf.keras.layers.Dense(dense_dim, activation="relu"), tf.keras.layers.Dense(key_dim)])
+
+        self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm3 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+
+        self.dropout1 = tf.keras.layers.Dropout(rate)
+        self.dropout2 = tf.keras.layers.Dropout(rate)
+        self.dropout3 = tf.keras.layers.Dropout(rate)
+
+    def call(self, x, enc_output, training, look_ahead_mask, padding_mask):
+        # enc_output.shape == (batch_size, input_seq_len, d_model)
+
+        attn1, attn_weights_block1 = self.mha1(x, x, x, look_ahead_mask)  # (batch_size, target_seq_len, d_model)
+        attn1 = self.dropout1(attn1, training=training)
+        out1 = self.layernorm1(attn1 + x)
+
+        attn2, attn_weights_block2 = self.mha2(enc_output, enc_output, out1, padding_mask)  # (batch_size, target_seq_len, d_model)
+        attn2 = self.dropout2(attn2, training=training)
+        out2 = self.layernorm2(attn2 + out1)  # (batch_size, target_seq_len, d_model)
+
+        ffn_output = self.ffn(out2)  # (batch_size, target_seq_len, d_model)
+        ffn_output = self.dropout3(ffn_output, training=training)
+        out3 = self.layernorm3(ffn_output + out2)  # (batch_size, target_seq_len, d_model)
+
+        return out3, attn_weights_block1, attn_weights_block2
