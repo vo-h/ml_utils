@@ -87,6 +87,9 @@ class Encoder(tf.keras.layers.Layer):
         add_value: bool = True,
         add_query: bool = True,
         add_key: bool = False,
+        value_vocab_size: int = None,
+        query_vocab_size: int = None,
+        key_vocab_size: int = None,
         mask_value: float = -10000,
         **kwargs
     ):
@@ -95,8 +98,8 @@ class Encoder(tf.keras.layers.Layer):
         Args:
             seq_length (int): max length of sequence. Used to generated 1st dimension of positional encoding.
             num_layers (int): # of encoder layers to use.
-            embed_dim (int): the 2nd dimension of the positional encoding. Will be used to
-                set key_dim if key_dim is not specified.
+            embed_dim (int): the 2nd dimension of the positional encoding & output dim of multihead attention.
+                Will be used to set key_dim if key_dim is not specified.
             dense_dim (int): dim of sandwiched dense layer in EncoderLayer.
             num_heads (int): num_heads in MultiAttentionHead.
             rate (float, optional): dropout rate for EncoderLayer. Defaults to 0.01.
@@ -137,12 +140,27 @@ class Encoder(tf.keras.layers.Layer):
             for _ in range(num_layers)
         ]
 
+        if value_vocab_size != None:
+            self.query_embedding = layers.Embedding(value_vocab_size, embed_dim)
+        if query_vocab_size != None:
+            self.vocab_embedding = layers.Embedding(query_vocab_size, embed_dim)
+        if key_vocab_size != None:
+            self.key_embedding = layers.Embedding(key_vocab_size, embed_dim)
+
     def call(self, query, value, key, training, mask=None, **kwargs):
 
         if mask == None:
             mask = compute_mask_for_multihead_attention(query=query, value=value, mask_value=self.mask_value)
 
-        # adding embedding and position encoding.
+        # vocab embedding
+        if hasattr(self, "query_embedding"):
+            query = self.query_embedding(query)
+        if hasattr(self, "vocab_embedding"):
+            vocab = self.vocab_embedding(vocab)
+        if hasattr(self, "key_embedding"):
+            key = self.key_embedding(key)
+
+        # position encoding.
         if self.encode_query:
             query = tf.cast(query, dtype=tf.float64) + self.pos_enc
         if self.encode_key:
