@@ -1,9 +1,20 @@
 import keras
-from typing import Tuple
+from typing import Tuple, List
 
 
 class Autoencoder(keras.Model):
-    def __init__(self, hidden_struct: Tuple[int, str], output_layer: Tuple[int, str]):
+    """Run of the mill autoencoder.
+
+    Args:
+        hidden_struct (List[Tuple[int, str]]): list of tuples. First value in tuple is
+            `units` to be passed to `Dense`. Second value of tuple is the `activation`.
+            First tuple in list describes layer right after input. Last tuple in list
+            is the last hidden layer - the 'embedding'.
+        output_layer (Tuple[int, str]): `units` and `activation` of output layer. Should
+            be same size as input, and `activation` should probably be None.
+    """
+
+    def __init__(self, hidden_struct: List[Tuple[int, str]], output_layer: Tuple[int, str]):
         super(Autoencoder, self).__init__()
         self.encoder = keras.Sequential()
         self.encoder.add(keras.layers.Flatten())

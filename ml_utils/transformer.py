@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from keras import layers
+from tensorflow.keras import layers
 import keras
 
 
@@ -36,26 +36,25 @@ def compute_mask_for_multihead_attention(query, value, mask_value=-10000):
 
 
 class EncoderLayer(tf.keras.layers.Layer):
-    def __init__(self, embed_dim, dense_dim, num_heads, rate=0.01, add_value=True, add_query=True, add_key=False, mask_value=-10000, **kwargs):
+    def __init__(self, key_dim, dense_dim, num_heads, rate=0.01, add_value=True, add_query=True, add_key=False, **kwargs):
 
         super(EncoderLayer, self).__init__()
 
         self.add_value = add_value
         self.add_query = add_query
         self.add_key = add_key
-        self.mask_value = mask_value
 
-        self.attention = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim, **kwargs)
-        self.dense_proj = keras.Sequential([layers.Dense(dense_dim, activation="relu"), layers.Dense(embed_dim)])
+        self.attention = layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim, **kwargs)
+        self.dense_proj = keras.Sequential([layers.Dense(dense_dim, activation="relu"), layers.Dense(key_dim)])
         self.layernorm_1 = layers.LayerNormalization()
         self.layernorm_2 = layers.LayerNormalization()
         self.dropout1 = layers.Dropout(rate)
         self.dropout2 = layers.Dropout(rate)
         self.supports_masking = True
 
-    def call(self, query, value, key, training, mask):
+    def call(self, query, value, key, training, mask, **kwargs):
 
-        attention_output = self.attention(query=query, value=value, key=key, attention_mask=mask)
+        attention_output = self.attention(query=query, value=value, key=key, attention_mask=mask, **kwargs)
 
         input_sum = 0
         if self.add_query:
@@ -75,21 +74,42 @@ class EncoderLayer(tf.keras.layers.Layer):
 class Encoder(tf.keras.layers.Layer):
     def __init__(
         self,
-        seq_length,
-        num_layers,
-        embed_dim,
-        dense_dim,
-        num_heads,
-        rate=0.01,
-        encode_value=True,
-        encode_query=True,
-        encode_key=True,
-        add_value=True,
-        add_query=True,
-        add_key=False,
-        mask_value=-10000,
+        seq_length: int,
+        num_layers: int,
+        embed_dim: int,
+        dense_dim: int,
+        num_heads: int,
+        rate: float = 0.01,
+        key_dim: float = None,
+        encode_value: bool = True,
+        encode_query: bool = True,
+        encode_key: bool = True,
+        add_value: bool = True,
+        add_query: bool = True,
+        add_key: bool = False,
+        mask_value: float = -10000,
         **kwargs
     ):
+        """Encoder found in transformers.
+
+        Args:
+            seq_length (int): max length of sequence. Used to generated 1st dimension of positional encoding.
+            num_layers (int): # of encoder layers to use.
+            embed_dim (int): the 2nd dimension of the positional encoding. Will be used to
+                set key_dim if key_dim is not specified.
+            dense_dim (int): dim of sandwiched dense layer in EncoderLayer.
+            num_heads (int): num_heads in MultiAttentionHead.
+            rate (float, optional): dropout rate for EncoderLayer. Defaults to 0.01.
+            key_dim (float, optional): key_dim for keras's multihead attention layer. Basically, dimension of
+                internal dense networks within the multihead attention layer.
+            encode_value (bool, optional): whether to add positional encoding to value tensor. Defaults to True.
+            encode_query (bool, optional): whether to add positional encoding to query tensor. Defaults to True.
+            encode_key (bool, optional): whether to add positional encoding to key tensor. Defaults to True.
+            add_value (bool, optional): whether to include value in the residual network in EncoderLayer. Defaults to True.
+            add_query (bool, optional): wheter to include query in the residual network in EncoderLayer. Defaults to True.
+            add_key (bool, optional): whether to include key in the residual network in EncoderLayer. Defaults to False.
+            mask_value (int, optional): mask value for padding masks. Defaults to -10000.
+        """
         super(Encoder, self).__init__()
 
         self.mask_value = mask_value
@@ -97,14 +117,30 @@ class Encoder(tf.keras.layers.Layer):
         self.encode_query = encode_query
         self.encode_key = encode_key
 
+        if key_dim == None:
+            key_dim = embed_dim
+
         self.pos_enc = tf.cast(positional_encoding(position=seq_length, d_model=embed_dim), dtype=tf.float64)
         self.enc_layers = [
-            EncoderLayer(embed_dim, dense_dim, num_heads, rate, add_value, add_query, add_key, mask_value, **kwargs) for _ in range(num_layers)
+            EncoderLayer(
+                key_dim=key_dim,
+                dense_dim=dense_dim,
+                num_heads=num_heads,
+                rate=rate,
+                add_value=add_value,
+                add_query=add_query,
+                add_key=add_key,
+                mask_value=mask_value,
+                output_shape=embed_dim,
+                **kwargs
+            )
+            for _ in range(num_layers)
         ]
 
-    def call(self, query, value, key, training, mask=None):
+    def call(self, query, value, key, training, mask=None, **kwargs):
 
-        attention_mask = compute_mask_for_multihead_attention(query=query, value=value, mask_value=self.mask_value)
+        if mask == None:
+            mask = compute_mask_for_multihead_attention(query=query, value=value, mask_value=self.mask_value)
 
         # adding embedding and position encoding.
         if self.encode_query:
@@ -114,10 +150,15 @@ class Encoder(tf.keras.layers.Layer):
         if self.encode_value:
             value += tf.cast(value, dtype=tf.float64) + self.pos_enc
 
-        x = self.enc_layers[0](query, value, key, training, attention_mask)
+        x = self.enc_layers[0](query, value, key, training, mask, **kwargs)
 
         if len(self.enc_layers) > 1:
             for i in range(1, len(self.enc_layers)):
-                x = self.enc_layers[i](x, x, x, training, attention_mask)
+                x = self.enc_layers[i](x, x, x, training, mask, **kwargs)
 
         return x  # (batch_size, input_seq_len, embed_dim)
+
+
+class DecoderLayer(tf.keras.layers.Layer):
+    def __init__(self, trainable=True, name=None, dtype=None, dynamic=False, **kwargs):
+        super().__init__(trainable, name, dtype, dynamic, **kwargs)
