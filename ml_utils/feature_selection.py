@@ -1,29 +1,28 @@
-from tensorflow.keras import layers
 import tensorflow as tf
+tf.keras.backend.set_floatx('float64')
 
-
-class GatedLinearUnit(layers.Layer):
+class GatedLinearUnit(tf.keras.layers.Layer):
     def __init__(self, units):
         super(GatedLinearUnit, self).__init__()
 
-        self.linear = layers.Dense(units)
-        self.sigmoid = layers.Dense(units, activation="sigmoid")
+        self.linear = tf.keras.layers.Dense(units)
+        self.sigmoid = tf.keras.layers.Dense(units, activation="sigmoid")
 
     def call(self, inputs):
         return self.linear(inputs) * self.sigmoid(inputs)
 
 
-class GatedResidualNetwork(layers.Layer):
+class GatedResidualNetwork(tf.keras.layers.Layer):
     def __init__(self, units, dropout_rate):
         super(GatedResidualNetwork, self).__init__()
 
         self.units = units
-        self.elu_dense = layers.Dense(units, activation="elu")
-        self.linear_dense = layers.Dense(units)
-        self.dropout = layers.Dropout(dropout_rate)
+        self.elu_dense = tf.keras.layers.Dense(units, activation="elu")
+        self.linear_dense = tf.keras.layers.Dense(units)
+        self.dropout = tf.keras.layers.Dropout(dropout_rate)
         self.gated_linear_unit = GatedLinearUnit(units)
-        self.layer_norm = layers.LayerNormalization()
-        self.project = layers.Dense(units)
+        self.layer_norm = tf.keras.layers.LayerNormalization()
+        self.project = tf.keras.layers.Dense(units)
 
     def call(self, inputs):
         x = self.elu_dense(inputs)
@@ -36,7 +35,7 @@ class GatedResidualNetwork(layers.Layer):
         return x
 
 
-class VariableSelection(layers.Layer):
+class VariableSelection(tf.keras.layers.Layer):
     def __init__(self, num_features, units, dropout_rate):
         super(VariableSelection, self).__init__()
         self.grns = list()
@@ -48,10 +47,10 @@ class VariableSelection(layers.Layer):
 
         # Create a GRN for the concatenation of all the features
         self.grn_concat = GatedResidualNetwork(units, dropout_rate)
-        self.softmax = layers.Dense(units=num_features, activation="softmax")
+        self.softmax = tf.keras.layers.Dense(units=num_features, activation="softmax")
 
     def call(self, inputs):
-        v = layers.concatenate(inputs)
+        v = tf.keras.layers.concatenate(inputs)
         v = self.grn_concat(v)
         v = tf.expand_dims(self.softmax(v), axis=-1)
 

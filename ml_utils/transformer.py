@@ -3,7 +3,7 @@ import tensorflow as tf
 
 
 def get_angles(pos, i, d_model):
-    angle_rates = 1 / np.power(10000, (2 * (i // 2)) / np.float32(d_model))
+    angle_rates = 1 / np.power(10000, (2 * (i // 2)) / np.float64(d_model))
     return pos * angle_rates
 
 
@@ -15,7 +15,7 @@ def positional_encoding(position, d_model):
     # apply cos to odd indices in the array; 2i+1
     angle_rads[:, 1::2] = np.cos(angle_rads[:, 1::2])
     pos_encoding = angle_rads[np.newaxis, ...]
-    return tf.cast(pos_encoding, dtype=tf.float32)[0]
+    return tf.cast(pos_encoding, dtype=tf.float64)[0]
 
 
 def compute_mask(inputs, mask_value=-10000):
@@ -43,6 +43,11 @@ class EncoderLayer(tf.keras.layers.Layer):
 
         super(EncoderLayer, self).__init__()
 
+        self.key_dim = key_dim
+        self.dense_dim = dense_dim
+        self.num_head = num_heads
+        self.ouptut_shape = output_shape
+        self.rate = rate
         self.add_value = add_value
         self.add_query = add_query
         self.add_key = add_key
@@ -61,20 +66,33 @@ class EncoderLayer(tf.keras.layers.Layer):
     def call(self, query, value, key, training, mask, **kwargs):
 
         attention_output = self.attention(query=query, value=value, key=key, attention_mask=mask, **kwargs)
+        inputs = list(zip([query, value, key], [self.add_query, self.add_value, self.add_key]))
 
-        input_sum = 0
-        if self.add_query:
-            input_sum += query
-        if self.add_key:
-            input_sum += key
-        if self.add_value:
-            input_sum += value
+        input_sum = tf.cast(tf.math.add_n([tf.cast(val[0], tf.float64) for val in inputs if val[1]]), tf.float64)
 
-        attention_output = self.dropout1(attention_output, training=training)
+        attention_output = tf.cast(self.dropout1(attention_output, training=training), tf.float64)
+        print(attention_output.dtype)
+        print(input_sum.dtype)
         out1 = self.layernorm_1(input_sum + attention_output)
         ffn_output = self.dense_proj(out1)
         ffn_output = self.dropout2(ffn_output, training=training)
         return self.layernorm_2(out1 + ffn_output)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "key_dim": self.key_dim,
+                "dense_dim": self.dense_dim,
+                "num_head": self.num_head,
+                "ouptut_shape": self.ouptut_shape,
+                "rate": self.rate,
+                "add_value": self.add_value,
+                "add_query": self.add_query,
+                "add_key": self.add_key,
+            }
+        )
+        return config
 
 
 class Encoder(tf.keras.layers.Layer):
@@ -97,7 +115,7 @@ class Encoder(tf.keras.layers.Layer):
         query_vocab_size: int = None,
         key_vocab_size: int = None,
         mask_value: float = -10000,
-        **kwargs
+        **kwargs,
     ):
         """Encoder found in transformers.
 
@@ -124,10 +142,23 @@ class Encoder(tf.keras.layers.Layer):
         """
         super(Encoder, self).__init__()
 
-        self.mask_value = mask_value
+        self.seq_length = seq_length
+        self.num_layers = num_layers
+        self.embed_dim = embed_dim
+        self.dense_dim = dense_dim
+        self.num_heads = num_heads
+        self.rate: rate = 0.01
+        self.key_dim = key_dim
         self.encode_value = encode_value
         self.encode_query = encode_query
         self.encode_key = encode_key
+        self.add_value = add_value
+        self.add_query = add_query
+        self.add_key = add_key
+        self.value_vocab_size = value_vocab_size
+        self.query_vocab_size = query_vocab_size
+        self.key_vocab_size = key_vocab_size
+        self.mask_value = mask_value
 
         if key_dim == None:
             key_dim = embed_dim
@@ -142,9 +173,8 @@ class Encoder(tf.keras.layers.Layer):
                 add_value=add_value,
                 add_query=add_query,
                 add_key=add_key,
-                mask_value=mask_value,
                 output_shape=embed_dim,
-                **kwargs
+                **kwargs,
             )
             for _ in range(num_layers)
         ]
@@ -173,9 +203,9 @@ class Encoder(tf.keras.layers.Layer):
         if self.encode_query:
             query = tf.cast(query, dtype=tf.float64) + self.pos_enc
         if self.encode_key:
-            key += tf.cast(key, dtype=tf.float64) + self.pos_enc
+            key = tf.cast(key, dtype=tf.float64) + self.pos_enc
         if self.encode_value:
-            value += tf.cast(value, dtype=tf.float64) + self.pos_enc
+            value = tf.cast(value, dtype=tf.float64) + self.pos_enc
 
         x = self.enc_layers[0](query, value, key, training, mask, **kwargs)
 
@@ -185,15 +215,40 @@ class Encoder(tf.keras.layers.Layer):
 
         return x  # (batch_size, input_seq_len, embed_dim)
 
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "seq_length": self.seq_length,
+                "num_layers": self.num_layers,
+                "embed_dim": self.embed_dim,
+                "dense_dim": self.dense_dim,
+                "num_heads": self.num_heads,
+                "rate": self.rate,
+                "key_dim": self.key_dim,
+                "encode_value": self.encode_value,
+                "encode_query": self.encode_query,
+                "encode_key": self.encode_key,
+                "add_value": self.add_value,
+                "add_query": self.add_query,
+                "add_key": self.add_key,
+                "value_vocab_size": self.value_vocab_size,
+                "query_vocab_size": self.query_vocab_size,
+                "key_vocab_size": self.key_vocab_size,
+                "mask_value": self.mask_value,
+            }
+        )
+        return config
+
 
 class DecoderLayer(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, dense_dim, key_dim, rate=0.1, **kwargs):
+    def __init__(self, embed_dim, num_heads, dense_dim, key_dim, rate=0.1, **kwargs):
         super(DecoderLayer, self).__init__()
 
         self.mha1 = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim, **kwargs)
-        self.mha2 = tf.keraas.layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim, **kwargs)
+        self.mha2 = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=key_dim, **kwargs)
 
-        self.ffn = tf.keras.Sequential([tf.keras.layers.Dense(dense_dim, activation="relu"), tf.keras.layers.Dense(key_dim)])
+        self.ffn = tf.keras.Sequential([tf.keras.layers.Dense(dense_dim, activation="relu"), tf.keras.layers.Dense(embed_dim)])
 
         self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
         self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
@@ -216,6 +271,38 @@ class DecoderLayer(tf.keras.layers.Layer):
 
         ffn_output = self.ffn(out2)  # (batch_size, target_seq_len, d_model)
         ffn_output = self.dropout3(ffn_output, training=training)
-        out3 = self.layernorm3(ffn_output + out2)  # (batch_size, target_seq_len, d_model)
+        out3 = self.layernorm3(ffn_output + out2)
 
         return out3, attn_weights_block1, attn_weights_block2
+
+
+class Decoder(tf.keras.layers.Layer):
+    def __init__(self, seq_length, num_layers, embed_dim, num_heads, dense_dim, target_vocab_size, rate=0.1):
+        super(Decoder, self).__init__()
+
+        self.num_layers = num_layers
+
+        self.embedding = tf.keras.layers.Embedding(target_vocab_size, embed_dim)
+        self.pos_encoding = positional_encoding(seq_length, embed_dim)
+
+        self.dec_layers = [DecoderLayer(embed_dim=embed_dim, num_heads=num_heads, dense_dim=dense_dim, rate=rate) for _ in range(num_layers)]
+        self.dropout = tf.keras.layers.Dropout(rate)
+
+    def call(self, x, enc_output, training, look_ahead_mask, padding_mask):
+
+        seq_len = tf.shape(x)[1]
+        attention_weights = {}
+
+        x = self.embedding(x)
+        x += self.pos_encoding[:, :seq_len, :]
+
+        x = self.dropout(x, training=training)
+
+        for i in range(self.num_layers):
+            x, block1, block2 = self.dec_layers[i](x, enc_output, training, look_ahead_mask, padding_mask)
+
+            attention_weights[f"decoder_layer{i+1}_block1"] = block1
+            attention_weights[f"decoder_layer{i+1}_block2"] = block2
+
+        # x.shape == (batch_size, target_seq_len, d_model)
+        return x, attention_weights
