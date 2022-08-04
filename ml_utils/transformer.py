@@ -71,8 +71,7 @@ class EncoderLayer(tf.keras.layers.Layer):
         input_sum = tf.cast(tf.math.add_n([tf.cast(val[0], tf.float64) for val in inputs if val[1]]), tf.float64)
 
         attention_output = tf.cast(self.dropout1(attention_output, training=training), tf.float64)
-        print(attention_output.dtype)
-        print(input_sum.dtype)
+
         out1 = self.layernorm_1(input_sum + attention_output)
         ffn_output = self.dense_proj(out1)
         ffn_output = self.dropout2(ffn_output, training=training)
